@@ -895,7 +895,8 @@ html&gt;body{padding:0}&lt;/style&gt;
     #france-itinerary-map-root .rim-subtitle { margin:6px 0 0; color:var(--muted-foreground); }
     #france-itinerary-map-root .rim-content { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(290px,.75fr); gap:14px; }
     #france-itinerary-map-root .rim-map-wrap { min-height:610px; position:relative; overflow:hidden; background:var(--accent); border:1px solid var(--border); border-radius:18px; }
-    #france-itinerary-map-root .rim-map { width:100%; height:610px; display:block; }
+    #france-itinerary-map-root .rim-map { width:100%; height:610px; display:block; cursor:grab; }
+    #france-itinerary-map-root .rim-map:active { cursor:grabbing; }
     #france-itinerary-map-root .rim-map-bg { fill: color-mix(in srgb, var(--accent) 66%, var(--background)); }
     #france-itinerary-map-root .rim-country { fill: color-mix(in srgb, var(--card) 82%, var(--primary)); stroke:color-mix(in srgb, var(--primary) 50%, var(--border)); stroke-width:1.2; }
     #france-itinerary-map-root .rim-neighbor { fill: color-mix(in srgb, var(--muted) 60%, var(--background)); stroke:var(--border); stroke-width:.7; }
@@ -907,6 +908,8 @@ html&gt;body{padding:0}&lt;/style&gt;
     #france-itinerary-map-root .rim-place.selected text { fill:#fffaf2; }
     #france-itinerary-map-root .rim-label { fill:var(--muted-foreground); font-size:12px; pointer-events:none; }
     #france-itinerary-map-root .rim-map-hint { position:absolute; left:16px; bottom:14px; color:var(--muted-foreground); font-size:12px; background:color-mix(in srgb,var(--card) 88%,transparent); padding:7px 10px; border-radius:8px; }
+    #france-itinerary-map-root .rim-zoom { position:absolute; right:16px; bottom:14px; display:flex; flex-direction:column; gap:5px; }
+    #france-itinerary-map-root .rim-zoom button { width:34px; height:34px; border:1px solid var(--border); border-radius:8px; color:var(--card-foreground); background:var(--card); font:500 18px/1 inherit; cursor:pointer; }
     #france-itinerary-map-root .rim-side { display:flex; flex-direction:column; gap:12px; min-width:0; }
     #france-itinerary-map-root .rim-card { background:var(--card); color:var(--card-foreground); border:1px solid var(--border); border-radius:14px; padding:15px; }
     #france-itinerary-map-root .rim-card h2 { margin:0 0 11px; font-size:16px; font-weight:500; }
@@ -940,7 +943,8 @@ html&gt;body{padding:0}&lt;/style&gt;
     &lt;main class=&quot;rim-content&quot;&gt;
       &lt;section class=&quot;rim-map-wrap&quot; aria-label=&quot;法国行程地图&quot;&gt;
         &lt;svg class=&quot;rim-map&quot; id=&quot;rim-map&quot; role=&quot;img&quot; aria-label=&quot;法国地图与行程路线&quot;&gt;&lt;/svg&gt;
-        &lt;div class=&quot;rim-map-hint&quot;&gt;点击地图标记或右侧行程查看详情&lt;/div&gt;
+        &lt;div class=&quot;rim-map-hint&quot;&gt;滚轮缩放 · 拖动平移 · 点击标记查看详情&lt;/div&gt;
+        &lt;div class=&quot;rim-zoom&quot; aria-label=&quot;地图缩放控制&quot;&gt;&lt;button id=&quot;rim-zoom-in&quot; type=&quot;button&quot; aria-label=&quot;放大地图&quot;&gt;＋&lt;/button&gt;&lt;button id=&quot;rim-zoom-out&quot; type=&quot;button&quot; aria-label=&quot;缩小地图&quot;&gt;−&lt;/button&gt;&lt;button id=&quot;rim-zoom-reset&quot; type=&quot;button&quot; aria-label=&quot;重置地图&quot;&gt;⟳&lt;/button&gt;&lt;/div&gt;
       &lt;/section&gt;
       &lt;aside class=&quot;rim-side&quot;&gt;
         &lt;section class=&quot;rim-card&quot;&gt;
@@ -961,6 +965,8 @@ html&gt;body{padding:0}&lt;/style&gt;
   &lt;/div&gt;
   &lt;script type=&quot;module&quot;&gt;
     import { geoMercator, geoPath } from &#x27;https://esm.sh/d3-geo@3.1.1&#x27;;
+    import { select } from &#x27;https://esm.sh/d3-selection@3.0.0&#x27;;
+    import { zoom } from &#x27;https://esm.sh/d3-zoom@3.0.0&#x27;;
     import { feature } from &#x27;https://esm.sh/topojson-client@3.1.0&#x27;;
     import world from &#x27;https://esm.sh/@d3-maps/atlas@1.0.0/world/countries/countries-110m&#x27;;
 
@@ -973,6 +979,13 @@ html&gt;body{padding:0}&lt;/style&gt;
       { id: 4, name: &#x27;尼斯&#x27;, en: &#x27;Nice&#x27;, lon: 7.2619, lat: 43.7102, date: &#x27;6月19日&#x27;, note: &#x27;蔚蓝海岸 · 返程&#x27; }
     ];
     let selectedId = 1;
+    let mapZoom;
+
+    function getMainlandFrance(france) {
+      if (france.geometry.type !== &#x27;MultiPolygon&#x27;) return france;
+      const polygons = france.geometry.coordinates.slice().sort((a, b) =&gt; JSON.stringify(b).length - JSON.stringify(a).length);
+      return { ...france, geometry: { type: &#x27;MultiPolygon&#x27;, coordinates: polygons.slice(0, 1) } };
+    }
 
     function renderList() {
       const list = root.querySelector(&#x27;#rim-list&#x27;);
@@ -995,21 +1008,26 @@ html&gt;body{padding:0}&lt;/style&gt;
       const width = svg.clientWidth || 700; const height = svg.clientHeight || 610;
       svg.setAttribute(&#x27;viewBox&#x27;, `0 0 ${width} ${height}`); svg.innerHTML = &#x27;&#x27;;
       const countries = feature(world, world.objects.features).features;
-      const france = countries.find(f =&gt; f.properties &amp;&amp; f.properties.id === &#x27;FRA&#x27;);
+      const france = getMainlandFrance(countries.find(f =&gt; f.properties &amp;&amp; f.properties.id === &#x27;FRA&#x27;));
       const projection = geoMercator().fitExtent([[28, 25], [width - 28, height - 28]], france);
       const path = geoPath(projection);
       svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;rect class=&quot;rim-map-bg&quot; x=&quot;0&quot; y=&quot;0&quot; width=&quot;${width}&quot; height=&quot;${height}&quot;/&gt;`);
-      svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;path class=&quot;rim-country&quot; d=&quot;${path(france)}&quot;/&gt;`);
+      svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;g id=&quot;rim-map-layer&quot;&gt;&lt;path class=&quot;rim-country&quot; d=&quot;${path(france)}&quot;/&gt;`);
       const route = stops.map(s =&gt; projection([s.lon, s.lat]).join(&#x27;,&#x27;)).join(&#x27; &#x27;);
       svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;polyline class=&quot;rim-route&quot; points=&quot;${route}&quot;/&gt;`);
       stops.forEach(s =&gt; { const [x,y] = projection([s.lon,s.lat]); svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;g class=&quot;rim-place ${s.id === selectedId ? &#x27;selected&#x27; : &#x27;&#x27;}&quot; data-id=&quot;${s.id}&quot; transform=&quot;translate(${x},${y})&quot; role=&quot;button&quot; aria-label=&quot;${s.name}&quot;&gt;&lt;circle r=&quot;14&quot;&gt;&lt;/circle&gt;&lt;text&gt;${s.id}&lt;/text&gt;&lt;/g&gt;`); });
+      const label = projection([2.5, 46.8]); svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;text class=&quot;rim-label&quot; x=&quot;${label[0]}&quot; y=&quot;${label[1]}&quot;&gt;FRANCE&lt;/text&gt;&lt;/g&gt;`);
       svg.querySelectorAll(&#x27;.rim-place&#x27;).forEach(g =&gt; g.addEventListener(&#x27;click&#x27;, () =&gt; selectStop(Number(g.dataset.id))));
-      const label = projection([2.5, 46.8]); svg.insertAdjacentHTML(&#x27;beforeend&#x27;, `&lt;text class=&quot;rim-label&quot; x=&quot;${label[0]}&quot; y=&quot;${label[1]}&quot;&gt;FRANCE&lt;/text&gt;`);
+      mapZoom = zoom().scaleExtent([1, 8]).on(&#x27;zoom&#x27;, event =&gt; select(svg).select(&#x27;#rim-map-layer&#x27;).attr(&#x27;transform&#x27;, event.transform));
+      select(svg).call(mapZoom).on(&#x27;dblclick.zoom&#x27;, null);
     }
 
     root.querySelector(&#x27;#rim-save&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { const s = stops.find(x =&gt; x.id === selectedId); s.date = root.querySelector(&#x27;#rim-date&#x27;).value; s.note = root.querySelector(&#x27;#rim-plan&#x27;).value; renderList(); });
     root.querySelector(&#x27;#rim-delete&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { if (stops.length &lt;= 1) return; const i = stops.findIndex(x =&gt; x.id === selectedId); stops.splice(i, 1); stops.forEach((s, idx) =&gt; s.id = idx + 1); selectedId = stops[Math.max(0, i - 1)].id; renderList(); renderDetail(); drawMap(); });
     root.querySelector(&#x27;#rim-add-stop&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { const next = stops.length + 1; stops.push({ id: next, name: &#x27;新地点&#x27;, en: &#x27;New place&#x27;, lon: 5.8, lat: 44.9, date: &#x27;待定&#x27;, note: &#x27;点击右侧补充行程&#x27; }); selectStop(next); });
+    root.querySelector(&#x27;#rim-zoom-in&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; select(svg).call(mapZoom.scaleBy, 1.6));
+    root.querySelector(&#x27;#rim-zoom-out&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; select(svg).call(mapZoom.scaleBy, 0.625));
+    root.querySelector(&#x27;#rim-zoom-reset&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; select(svg).call(mapZoom.transform, {k:1,x:0,y:0}));
     window.addEventListener(&#x27;resize&#x27;, drawMap);
     renderList(); renderDetail(); drawMap();
   &lt;/script&gt;
